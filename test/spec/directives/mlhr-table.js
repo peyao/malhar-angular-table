@@ -108,7 +108,7 @@ describe('Directive: mlhrTable', function () {
   });
 
   it('should create two tables', function () {
-    expect(element.find('table').length).to.equal(2);
+    expect(element.find('table').length).to.equal(3);
   });
 
   it('should create an options object if one is not provided', function() {
@@ -117,7 +117,7 @@ describe('Directive: mlhrTable', function () {
 
   it('should display the data passed to it', function () {
     var expected = data[0].first_name;
-    var actual = element.find('table:eq(1) tbody.mlhr-table-rendered-rows tr:eq(0) td:eq(2)').text();
+    var actual = element.find('table:eq(2) tbody.mlhr-table-rendered-rows tr:eq(0) td:eq(2)').text();
     actual = $.trim(actual);
     expect(actual).to.equal(expected);
   });
@@ -126,7 +126,7 @@ describe('Directive: mlhrTable', function () {
     scope.my_table_data = genRows(30);
     scope.$apply();
     var expected = scope.my_table_data[0].first_name;
-    var actual = element.find('table:eq(1) tbody.mlhr-table-rendered-rows tr:eq(0) td:eq(2)').text();
+    var actual = element.find('table:eq(2) tbody.mlhr-table-rendered-rows tr:eq(0) td:eq(2)').text();
     actual = $.trim(actual);
     expect(actual).to.equal(expected);
   });
@@ -208,12 +208,6 @@ describe('Directive: mlhrTable', function () {
     it('should display column.label if it is present, even if it is a falsey value', function() {
       var actual = $.trim(element.find('table:eq(0) th:eq(0) .column-text').text());
       expect(actual).to.equal(columns[0].label);
-    });
-
-    it('should attach a title (tooltip) to <th>s where title was specified in column definition', function() {
-      var actual = element.find('table:eq(0) th:eq(2)').attr('title');
-      var expected = columns[2].title;
-      expect(actual).to.equal(expected);
     });
 
   });

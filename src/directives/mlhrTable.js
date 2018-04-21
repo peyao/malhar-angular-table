@@ -18,10 +18,11 @@
 angular.module('datatorrent.mlhrTable.directives.mlhrTable', [
   'datatorrent.mlhrTable.controllers.MlhrTableController',
   'datatorrent.mlhrTable.directives.mlhrTableRows',
+  'datatorrent.mlhrTable.directives.mlhrTableHeaderLabel',
   'datatorrent.mlhrTable.directives.mlhrTableDummyRows'
 ])
 
-.directive('mlhrTable', ['$log', '$timeout', '$q', function ($log, $timeout, $q) {
+.directive('mlhrTable', ['$log', '$timeout', '$q', '$window', function ($log, $timeout, $q, $window) {
 
   function debounce(func, wait, immediate) {
     var timeout, args, context, timestamp, result;
@@ -75,6 +76,84 @@ angular.module('datatorrent.mlhrTable.directives.mlhrTable', [
   }
 
   function link(scope, element) {
+    function adjustColumnWidths(column) {
+      // exit if there are no columns
+      if (!scope.columns) {
+        return;
+      }
+
+      // exit if there is not selection column
+      var count = scope.columns.filter(function(col) { return col.id === 'selector' }).length;
+      if (count === 0) {
+        return;
+      }
+
+      var id = column && column.id ? column.id : undefined;
+
+      // It is possible for users to resize all columns in the table so that the selection column gets resized wider than
+      // it should be.
+      // The code below will expand the last or next to last column if necessary to prevent the selection column from growing.
+      // The column to be expanded cannot be the column being adjusted and the lockWidth property is not true.
+      var tableWidth = element.width();
+      var widths = 0;
+      scope.columns.forEach(function(col) {
+        if ((col.width + '').indexOf('%') > -1) {
+          widths += parseFloat(col.width) / 100 * tableWidth;
+        }  else {
+        widths += parseFloat(col.width);
+        }
+      });
+      if (widths < tableWidth) {
+        // get last column that is not the column being resized and the lockWidth is not true
+        for(var i = scope.columns.length - 1; i > 0; i--) {
+          if (scope.columns[i].id !== id && !scope.columns[i].lockWidth && scope.columns[i].id !== 'selector') {
+            // we can delete the width of this column
+            delete scope.columns[i].width;
+            break;
+          }
+        }
+      }
+    }
+
+    scope.$on('__column.resized__', function(event, column) {
+      adjustColumnWidths(column);
+      scope.$parent.$parent.$emit('column.resized', column);
+    });
+    scope.$on('__column.sorted__', function(event, column) {
+      scope.$parent.$parent.$emit('column.sorted', column);
+    });
+    scope.$on('__column.moved__', function(event, columnPositions) {
+      scope.$parent.$parent.$emit('column.moved', columnPositions);
+    });
+
+    // we also want to make sure the selection column doesn't expand when the browser resizes
+    $($window).on('resize', adjustColumnWidths);
+
+    // remove window resize event
+    scope.$on('$destroy', function() {
+      $($window).off('resize', adjustColumnWidths);
+    });
+
+    var REFRESH_FRAME_RATE = 500;     // Throttle the bodyHeight update to .5 second
+
+    // determine requestAnimationFrame compabitility
+    var raf = window.requestAnimationFrame
+            || window.mozRequestAnimationFrame
+            || window.webkitRequestAnimationFrame
+            || window.msRequestAnimationFrame
+            || function(f) { return setTimeout(f, scope.options.scrollDebounce) };
+
+    // This tableId is used to cache the sort column function
+    // It's used in the mlhrTableSortFunctions filter
+    // If this value isn't set, user will see a bug when sorting
+    // two different columns which have the same id property value.
+    // This happens even if the columns are on different pages.
+    scope.options = scope.options || {};
+    scope.options.tableId = scope.$id;
+
+    if (scope.options.setTableScope) {
+      scope.options.tableScope = scope;
+    }
 
     // Prevent following user input objects from being modified by making deep copies of originals
     scope.columns = angular.copy(scope._columns);
@@ -118,6 +197,7 @@ angular.module('datatorrent.mlhrTable.directives.mlhrTable', [
     defaults(scope.options, {
       bgSizeMultiplier: 1,
       rowPadding: 10,
+      headerHeight: 77,
       bodyHeight: 300,
       fixedHeight: false,
       defaultRowHeight: 40,
@@ -163,25 +243,63 @@ angular.module('datatorrent.mlhrTable.directives.mlhrTable', [
       scope.$watchCollection('searchTerms', scope.saveToStorage);
       //  - paging scheme
       scope.$watch('options.pagingScheme', scope.saveToStorage);
-      //  - row limit
-      scope.$watch('options.bodyHeight', function() {
-        scope.calculateRowLimit();
-        scope.tbodyNgStyle = {};
-        scope.tbodyNgStyle[ scope.options.fixedHeight ? 'height' : 'max-height' ] = scope.options.bodyHeight + 'px';
-        scope.saveToStorage();
-      });
-      scope.$watch('filterState.filterCount', function() {
-        scope.onScroll();
-      });
-      scope.$watch('rowHeight', function(size) {
-        element.find('tr.mlhr-table-dummy-row').css('background-size','auto ' + size * scope.options.bgSizeMultiplier + 'px');
-      });
-      //  - when column gets enabled or disabled
-      //  TODO
+    } else if (scope.options.userOverrides !== undefined && scope.options.userOverrides !== null) {
+      scope.processStateString(scope.options.userOverrides);
     }
+    // using requestAnimationFrame to watch for bodyHeight change to get better display response
+    var bodyHeightSaved = undefined;
+    var lastBodyHeightUpdated = Date.now();
+
+
+    var bodyHeightChanged = function() {
+      var savedRowOffset = scope.rowOffset;
+      scope.scrollHandler();
+      if (scope.rowOffset === savedRowOffset && scope.dummyScope) {
+        scope.dummyScope.updateHeight();
+      }
+      if (!scope.options.ignoreTableHeightStyle) {
+        scope.scrollDiv.css(scope.options.fixedHeight ? 'height' : 'max-height', scope.options.bodyHeight + 'px');
+      }
+      scope.saveToStorage();
+    };
+
+    var rafid1;
+    var bodyHeightWatchLoop = function() {
+      if (scope.options.bodyHeight !== bodyHeightSaved && Date.now() - lastBodyHeightUpdated > REFRESH_FRAME_RATE) {
+        lastBodyHeightUpdated = Date.now();
+        bodyHeightSaved = scope.options.bodyHeight;
+        bodyHeightChanged();
+      }
+      rafid1 = raf(bodyHeightWatchLoop);
+    };
+    rafid1 = raf(bodyHeightWatchLoop);
+
+    scope.$watch('rowHeight', function(size) {
+      element.find('tr.mlhr-table-dummy-row').css('background-size','auto ' + size * scope.options.bgSizeMultiplier + 'px');
+    });
 
     var scrollDeferred;
-    var debouncedScrollHandler = debounce(function() {
+    var scrollTopSaved = -1;
+    var rafid2;
+    var loop = function(timeStamp) {
+      if (scrollTopSaved !== scope.scrollDiv.scrollTop()) {
+        scope.tableHeader = scope.tableHeader || element.find('.mlhr-table.mlhr-header-table');
+        scope.tableDummy = scope.tableDummy || element.find('.mlhr-table.mlhr-dummy-table.table');
+        scope.tableRows = scope.tableRows || element.find('.mlhr-table.mlhr-rows-table.table');
+
+        scrollTopSaved = scope.scrollDiv.scrollTop();
+        if (!scrollDeferred) {
+          scrollDeferred = $q.defer();
+          scope.options.scrollingPromise = scrollDeferred.promise;
+        }
+        // perform scrolling code
+        scope.scrollHandler();
+      }
+      // add loop to next repaint cycle
+      rafid2 = raf(loop);
+    };
+
+    scope.scrollHandler = function() {
 
       scope.calculateRowLimit();
 
@@ -189,40 +307,40 @@ angular.module('datatorrent.mlhrTable.directives.mlhrTable', [
 
       var rowHeight = scope.rowHeight;
 
-      if (rowHeight === 0) {
+      if (rowHeight === 0 || scope.tableRows === undefined) {
         return false;
       }
 
-      scope.rowOffset = Math.max(0, Math.floor(scrollTop / rowHeight) - scope.options.rowPadding);
+      if (scope.options.ignoreDummyRows) {
+        scope.rowOffset = 0;
+      } else {
+        // make sure we adjust rowOffset so that last row renders at bottom of div
+        scope.rowOffset = Math.max(0, Math.min(scope.filterState.filterCount - scope.rowLimit, Math.floor(scrollTop / rowHeight) - scope.options.rowPadding));
 
-      scrollDeferred.resolve();
-
-      scrollDeferred = null;
-
-      scope.options.scrollingPromise = null;
-
-      scope.$digest();
-
-    }, scope.options.scrollDebounce);
-
-    scope.onScroll = function() {
-      if (!scrollDeferred) {
-        scrollDeferred = $q.defer();
-        scope.options.scrollingPromise = scrollDeferred.promise;
+        // move the table rows to a position according to the div scroll top
+        scope.tableRows.css('top', '-' + (scope.tableDummy.height() - rowHeight * scope.rowOffset) + 'px');        
       }
-      debouncedScrollHandler();
+
+      if (scrollDeferred) {
+        scrollDeferred.resolve();
+        scrollDeferred = null;
+      }
+      scope.options.scrollingPromise = null;
+      if (!scope.$root.$$phase) {
+        scope.$digest();
+      }
+      scope.userScrollSaved = scope.userScroll;
     };
 
     scope.scrollDiv = element.find('.mlhr-rows-table-wrapper');
-    scope.scrollDiv.on('scroll', scope.onScroll);
+
+    rafid2 = raf(loop);
 
     // Wait for a render
     $timeout(function() {
       // Calculates rowHeight and rowLimit
       scope.calculateRowLimit();
-
     }, 0);
-
 
     scope.api = {
       isSelectedAll: scope.isSelectedAll,
@@ -254,8 +372,14 @@ angular.module('datatorrent.mlhrTable.directives.mlhrTable', [
           $log.warn('Failed loading table data: ' + reason);
         }
       );
+    } else { //scope.options.loadingPromise is optional, not required. So, when it's not specified, scope.options.loading should be set to false. Otherwise, spinner wheel will hang there forever where there is no rows.
+      scope.api.setLoading(false);
     }
 
+    scope.$on('$destroy', function() {
+      cancelAnimationFrame(rafid1);
+      cancelAnimationFrame(rafid2);
+    });
   }
 
   return {
